@@ -1,49 +1,48 @@
-import React, { useEffect } from "react";
-import Parse from "parse";
-import { Outlet } from "react-router";
-import { saveLanguageInLocal } from "../constant/Utils";
-import { useTranslation } from "react-i18next";
+import React, { useEffect, useState } from "react";
+import { Outlet, useNavigate } from "react-router-dom";
+import { auth } from "../firebaseConfig"; // Adjust path if necessary
+import { appInfo } from "../constant/appinfo"; // For default redirect path
+import Loader from "./Loader"; // Assuming a Loader component exists
+
 const ValidateRoute = () => {
-  const { i18n } = useTranslation();
+  const navigate = useNavigate();
+  //isLoading helps prevent rendering Outlet before navigation decision
+  const [isLoading, setIsLoading] = useState(true);
+
   useEffect(() => {
-    (async () => {
-      if (localStorage.getItem("accesstoken")) {
-        try {
-          // Use the session token to validate the user
-          const userQuery = new Parse.Query(Parse.User);
-          const user = await userQuery.get(Parse?.User?.current()?.id, {
-            sessionToken: localStorage.getItem("accesstoken")
-          });
-          if (!user) {
-            handlelogout();
-          }
-        } catch (error) {
-          console.log("err in validate route", error);
-          handlelogout();
-        }
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  const handlelogout = async () => {
-    let appdata = localStorage.getItem("userSettings");
-    let applogo = localStorage.getItem("appLogo");
-    let defaultmenuid = localStorage.getItem("defaultmenuid");
-    let PageLanding = localStorage.getItem("PageLanding");
-    let baseUrl = localStorage.getItem("baseUrl");
-    let appid = localStorage.getItem("parseAppId");
+    // Use onAuthStateChanged for a more reliable check, but auth.currentUser is quicker for initial synchronous check.
+    // The main onAuthStateChanged in App.jsx will handle global state. This is a route-specific check.
+    const currentUser = auth.currentUser;
+    const firebaseUid = localStorage.getItem("firebaseUid"); // Check our flag from login/signup/onAuthStateChanged
 
-    localStorage.clear();
-    saveLanguageInLocal(i18n);
+    if (currentUser || firebaseUid) { // If Firebase knows the user OR our flag is set
+      // User is authenticated, should not access Login, AddAdmin, etc.
+      // Determine default redirect path
+      const userRole = localStorage.getItem("_user_role");
+      const settings = appInfo.settings;
+      const menu = userRole && settings.find((m) => m.role === userRole);
+      // Fallback to a generic dashboard or the first role's page if specific role not found or no menu
+      const defaultRedirectPath = menu
+        ? `/${menu.pageType}/${menu.pageId}`
+        : (settings[0] ? `/${settings[0].pageType}/${settings[0].pageId}` : "/dashboard/35KBoSgoAK");
 
-    localStorage.setItem("appLogo", applogo);
-    localStorage.setItem("defaultmenuid", defaultmenuid);
-    localStorage.setItem("PageLanding", PageLanding);
-    localStorage.setItem("userSettings", appdata);
-    localStorage.setItem("baseUrl", baseUrl);
-    localStorage.setItem("parseAppId", appid);
-  };
-  return <div>{<Outlet />}</div>;
+      console.log(`ValidateRoute: User authenticated, redirecting to ${defaultRedirectPath}`);
+      navigate(defaultRedirectPath, { replace: true });
+      // setIsLoading(false) will be set after navigation, or component unmounts.
+      // No need to explicitly set isLoading to false if navigating away.
+    } else {
+      // User is not authenticated, allow access to public routes
+      setIsLoading(false);
+    }
+    // Dependency array: navigate. If auth.currentUser changes, onAuthStateChanged in App.jsx should handle global state.
+  }, [navigate]);
+
+  if (isLoading) {
+    return <Loader />; // Show loader while checking auth status
+  }
+
+  // If not authenticated (and thus not redirected), render the child routes (Login, AddAdmin, etc.)
+  return <Outlet />;
 };
 
 export default ValidateRoute;

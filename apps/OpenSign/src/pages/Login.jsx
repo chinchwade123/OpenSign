@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from "react";
-import Parse from "parse";
+// import Parse from "parse"; // Firebase: Parse will be phased out
 import { useDispatch } from "react-redux";
-import axios from "axios";
+// import axios from "axios"; // Firebase: Use apiClient
+import apiClient from "../api/apiClient"; // Firebase: Use our configured apiClient
+import { auth } from "../firebaseConfig"; // Firebase: Import auth
+import { signInWithCustomToken, signOut } from "firebase/auth"; // Firebase: Import specific auth functions
 import Title from "../components/Title";
 import { NavLink, useNavigate, useLocation } from "react-router";
 import login_img from "../assets/images/login_img.svg";
@@ -137,265 +140,224 @@ function Login() {
     await handleLogin();
   };
 
+  // Firebase: Updated setLocalVar for Firebase user data
+  const setFirebaseLocalVar = (firebaseUser, backendUserData) => {
+    // firebaseUser is from signInWithCustomToken().user or auth.currentUser
+    // backendUserData is from our /api/login or /api/me endpoint
+    if (!firebaseUser || !backendUserData) {
+      console.error("setFirebaseLocalVar: Missing user data");
+      return;
+    }
+    localStorage.setItem("firebaseUid", firebaseUser.uid);
+    localStorage.setItem("UserInformation", JSON.stringify(backendUserData)); // Store data from our backend
+    localStorage.setItem("userEmail", backendUserData.email || firebaseUser.email); // Prefer backend email
+
+    if (backendUserData.profile?.ProfilePic) { // Assuming ProfilePic might be in profile
+      localStorage.setItem("profileImg", backendUserData.profile.ProfilePic);
+    } else {
+      localStorage.setItem("profileImg", "");
+    }
+    // Store other necessary info from backendUserData (role, tenant, etc.)
+    if (backendUserData.roleInfo) {
+      localStorage.setItem("_user_role", backendUserData.roleInfo.role); // e.g. contracts_User
+    }
+    if (backendUserData.roleInfo?.tenantId) { // Assuming tenantId is part of roleInfo or user profile
+      localStorage.setItem("TenantId", backendUserData.roleInfo.tenantId);
+      // Potentially dispatch to show tenant name if available directly in backendUserData.user.tenantName
+      // dispatch(showTenant(backendUserData.user.tenantName));
+      // localStorage.setItem("TenantName", backendUserData.user.tenantName);
+    }
+     // Remove Parse specific token
+    localStorage.removeItem("accesstoken");
+  };
+
+
+  // Firebase: Updated handleLogin function
+  const handleLogin = async () => {
+    const email = state?.email;
+    const password = state?.password;
+
+    if (!email || !password) {
+      showToast("warning", "Email and password are required.");
+      return;
+    }
+
+    localStorage.removeItem("accesstoken"); // Clear old Parse token
+    localStorage.removeItem("firebaseUid"); // Clear any old Firebase UID
+
+    setState({ ...state, loading: true });
+    try {
+      // localStorage.setItem("appLogo", appInfo.applogo); // This can remain if appInfo is still used
+
+      // 1. Call backend /api/login
+      const apiBaseUrl = appInfo.apiBaseUrl; // Use the new centralized config
+
+      const response = await apiClient.post(`/api/login`, { email, password }); // Use apiClient, ensure /api prefix
+
+      const { customToken, user: backendUserData } = response.data;
+
+      if (!customToken || !backendUserData) {
+        throw new Error("Login response missing token or user data.");
+      }
+
+      // 2. Sign in with custom token on Firebase client
+      const userCredential = await signInWithCustomToken(auth, customToken);
+      const firebaseUser = userCredential.user;
+
+      if (firebaseUser) {
+        setFirebaseLocalVar(firebaseUser, backendUserData); // Store combined user info
+
+        // 3. Proceed with application logic (similar to continueLoginFlow but using backendUserData)
+        const userSettings = appInfo.settings; // This might need to be revisited if settings depend on Parse
+        const userRole = backendUserData.roleInfo?.role; // e.g. "contracts_User"
+
+        if (!userRole) {
+          // This case means user is authenticated with Firebase, but doesn't have a role in our system.
+          // This could be where the modal for additional info (Company, JobTitle) comes in,
+          // but it would then call a different backend endpoint to update the user's profile/role in RTDB,
+          // not the full Parse "usersignup".
+          setState({ ...state, loading: false });
+          showToast("warning", "User role not found. Please complete your profile.");
+          // setIsModal(true); // Potentially open modal to collect more info
+          // For now, log out if role is critical for app function
+          logOutUser(); // Or navigate to a profile completion page
+          return;
+        }
+
+        const menu = userRole && userSettings?.find((menu) => menu.role === userRole);
+
+        if (menu) {
+          const redirectUrl = location?.state?.from || `/${menu.pageType}/${menu.pageId}`;
+          // Store other necessary localStorage items based on backendUserData
+          localStorage.setItem("username", backendUserData.name || firebaseUser.displayName);
+          // language preference if available in backendUserData.profile.language
+          if (backendUserData.profile?.Language) {
+            i18n.changeLanguage(backendUserData.profile.Language);
+          }
+
+          localStorage.setItem("PageLanding", menu.pageId);
+          localStorage.setItem("defaultmenuid", menu.menuId);
+          localStorage.setItem("pageType", menu.pageType);
+          setState({ ...state, loading: false });
+          navigate(redirectUrl);
+        } else {
+          // Role exists in backendUserData, but no matching menu found in appInfo.settings
+          setState({ ...state, loading: false });
+          showToast("danger", t("role-not-configured"));
+          logOutUser(); // Or navigate to a generic dashboard / error page
+        }
+      } else {
+        throw new Error("Firebase sign-in with custom token failed.");
+      }
+    } catch (error) {
+      console.error("Error during Firebase login:", error);
+      const errorMsg = error.response?.data?.error || error.message || "Login failed. Please try again.";
+      showToast("danger", errorMsg);
+      setState({ ...state, loading: false });
+    }
+  };
+
   const setThirdpartyLoader = (value) => {
     setState({ ...state, thirdpartyLoader: value });
   };
 
+  // Firebase: thirdpartyLoginfn needs complete rewrite if third-party auth (Google, etc.) is done via Firebase.
+  // For now, this function is largely tied to Parse and will be skipped in this refactoring pass.
   const thirdpartyLoginfn = async (sessionToken) => {
-    const baseUrl = localStorage.getItem("baseUrl");
-    const parseAppId = localStorage.getItem("parseAppId");
-    const res = await axios.get(baseUrl + "users/me", {
-      headers: {
-        "X-Parse-Session-Token": sessionToken,
-        "X-Parse-Application-Id": parseAppId
-      }
-    });
-    await Parse.User.become(sessionToken).then(() => {
-      window.localStorage.setItem("accesstoken", sessionToken);
-    });
-    if (res.data) {
-      let _user = res.data;
-      setLocalVar(_user);
-      // Check extended class user role and tenentId
-      try {
-        const userSettings = appInfo.settings;
-        const extUser = await Parse.Cloud.run("getUserDetails");
-        if (extUser) {
-          const IsDisabled = extUser?.get("IsDisabled") || false;
-          if (!IsDisabled) {
-            const userRole = extUser?.get("UserRole");
-            const menu =
-              userRole && userSettings.find((menu) => menu.role === userRole);
-            if (menu) {
-              const _currentRole = userRole;
-              const redirectUrl =
-                location?.state?.from || `/${menu.pageType}/${menu.pageId}`;
-              const _role = _currentRole.replace("contracts_", "");
-              const extInfo = JSON.parse(JSON.stringify(extUser));
-              localStorage.setItem("_user_role", _role);
-              localStorage.setItem("Extand_Class", JSON.stringify([extUser]));
-              localStorage.setItem("userEmail", extInfo?.Email);
-              localStorage.setItem("username", extInfo?.Name);
-              if (extInfo?.TenantId) {
-                const tenant = {
-                  Id: extInfo?.TenantId?.objectId || "",
-                  Name: extInfo?.TenantId?.TenantName || ""
-                };
-                localStorage.setItem("TenantId", tenant?.Id);
-                dispatch(showTenant(tenant?.Name));
-                localStorage.setItem("TenantName", tenant?.Name);
-              }
-              localStorage.setItem("PageLanding", menu.pageId);
-              localStorage.setItem("defaultmenuid", menu.menuId);
-              localStorage.setItem("pageType", menu.pageType);
-                navigate(redirectUrl);
-            } else {
-              showToast("danger", t("role-not-found"));
-              logOutUser();
-            }
-          } else {
-            showToast("danger", t("do-not-access-contact-admin"));
-            logOutUser();
-          }
-        } else {
-          showToast("danger", t("user-not-found"));
-          logOutUser();
-        }
-      } catch (error) {
-        console.error("err in fetching extUser", err);
-        showToast("danger", `${err.message}`);
-        const payload = { sessionToken: _user.sessionToken };
-        handleSubmitbtn(payload);
-      } finally {
-        setThirdpartyLoader(false);
-      }
-    }
+    showToast("info", "Third-party login needs to be updated for Firebase.");
+    setThirdpartyLoader(false);
+    // ... existing Parse-specific code ...
   };
 
+  // Firebase: GetLoginData (auto-login if token exists) needs to use onAuthStateChanged listener
+  // This function might be removed or its logic moved to an effect hook with onAuthStateChanged
   const GetLoginData = async () => {
-    setState({ ...state, loading: true });
-    try {
-      const user = await Parse.User.become(localStorage.getItem("accesstoken"));
-      const _user = user.toJSON();
-      setLocalVar(_user);
-      const userSettings = appInfo.settings;
-      const extUser = await Parse.Cloud.run("getUserDetails");
-      if (extUser) {
-        const IsDisabled = extUser?.get("IsDisabled") || false;
-        if (!IsDisabled) {
-          const userRole = extUser.get("UserRole");
-          const _currentRole = userRole;
-          const menu =
-            userRole && userSettings.find((menu) => menu.role === userRole);
-          if (menu) {
-            const extInfo = JSON.parse(JSON.stringify(extUser));
-            const _role = _currentRole.replace("contracts_", "");
-            localStorage.setItem("_user_role", _role);
-            const redirectUrl =
-              location?.state?.from || `/${menu.pageType}/${menu.pageId}`;
-            localStorage.setItem("Extand_Class", JSON.stringify([extUser]));
-            localStorage.setItem("userEmail", extInfo.Email);
-            localStorage.setItem("username", extInfo.Name);
-            if (extInfo?.TenantId) {
-              const tenant = {
-                Id: extInfo?.TenantId?.objectId || "",
-                Name: extInfo?.TenantId?.TenantName || ""
-              };
-              localStorage.setItem("TenantId", tenant?.Id);
-              dispatch(showTenant(tenant?.Name));
-              localStorage.setItem("TenantName", tenant?.Name);
-            }
-            localStorage.setItem("PageLanding", menu.pageId);
-            localStorage.setItem("defaultmenuid", menu.menuId);
-            localStorage.setItem("pageType", menu.pageType);
-              navigate(redirectUrl);
-          } else {
-            setState({ ...state, loading: false });
-            logOutUser();
-          }
-        } else {
-          showToast("danger", t("do-not-access-contact-admin"));
-          logOutUser();
-        }
-      } else {
-        showToast("danger", t("user-not-found"));
-        logOutUser();
-      }
-    } catch (error) {
-      showToast("danger", t("something-went-wrong-mssg"));
-      console.log("err", error);
-    }
+    // This function was for Parse's session token.
+    // With Firebase, onAuthStateChanged handles persistent login state.
+    // If we need to fetch fresh user data from backend on app load for an existing Firebase session:
+    // 1. onAuthStateChanged will give current Firebase user.
+    // 2. If user exists, get ID token: `user.getIdToken()`.
+    // 3. Call a backend endpoint like `/api/me` with this ID token.
+    // 4. Backend returns full user data from RTDB.
+    // 5. Update localStorage and app state.
+    // For now, we'll rely on onAuthStateChanged to be set up elsewhere (e.g., in App.js or a context).
+    // This specific GetLoginData might not be needed if state.loading is handled by onAuthStateChanged.
+    console.log("GetLoginData (Parse) called. This should be replaced by Firebase onAuthStateChanged logic.");
+    // setState({ ...state, loading: false }); // Example: stop loading if this was for initial load
   };
+
 
   const togglePasswordVisibility = () => {
     setState({ ...state, passwordVisible: !state.passwordVisible });
   };
 
+  // Firebase: handleSubmitbtn (modal form) needs to be re-evaluated.
+  // If this modal is for users who logged in but lack role/company info:
+  // It should call a new backend endpoint like `POST /api/users/complete-profile`
+  // This endpoint would update the user's data in Firebase RTDB (e.g., in /users/{uid}/profile and /user_roles/{uid})
   const handleSubmitbtn = async (e) => {
     e.preventDefault();
-    if (userDetails.Destination && userDetails.Company) {
-      setThirdpartyLoader(true);
-      const payload = { sessionToken: localStorage.getItem("accesstoken") };
-      const userInformation = JSON.parse(
-        localStorage.getItem("UserInformation")
-      );
-      if (payload && payload.sessionToken) {
-        const params = {
-          userDetails: {
-            name: userInformation.name,
-            email: userInformation.email,
-            phone: userInformation?.phone || "",
-            role: "contracts_User",
-            company: userDetails.Company,
-            jobTitle: userDetails.Destination,
-            timezone: usertimezone
-          }
-        };
-        const userSignUp = await Parse.Cloud.run("usersignup", params);
-        if (userSignUp && userSignUp.sessionToken) {
-          const LocalUserDetails = {
-            name: userInformation.name,
-            email: userInformation.email,
-            phone: userInformation?.phone || "",
-            company: userDetails.Company,
-            jobTitle: userDetails.JobTitle
-          };
-          localStorage.setItem("userDetails", JSON.stringify(LocalUserDetails));
-          thirdpartyLoginfn(userSignUp.sessionToken);
-        } else {
-          alert(userSignUp.message);
-        }
-      } else if (
-        payload &&
-        payload.message.replace(/ /g, "_") === "Internal_server_err"
-      ) {
-        alert(t("server-error"));
-      }
-    } else {
-      showToast("warning", t("fill-required-details!"));
-    }
+    showToast("info", "Profile completion flow needs to be updated for Firebase.");
+    // ... existing Parse-specific code ...
+    // Example of what it might do:
+    // if (userDetails.Destination && userDetails.Company) {
+    //   const firebaseUid = localStorage.getItem("firebaseUid");
+    //   if(firebaseUid) {
+    //      // Call new backend endpoint: POST /api/users/complete-profile
+    //      // Body: { uid: firebaseUid, company: userDetails.Company, jobTitle: userDetails.Destination, timezone: usertimezone }
+    //      // On success, fetch updated user data and proceed to navigate.
+    //   }
+    // }
+    setIsModal(false); // Close modal for now
   };
 
+  // Firebase: Updated logOutUser
   const logOutUser = async () => {
     setIsModal(false);
     try {
-      await Parse.User.logOut();
+      await signOut(auth); // Firebase sign out
     } catch (err) {
-      console.log("Err while logging out", err);
+      console.error("Error during Firebase sign out:", err);
     }
-    let appdata = localStorage.getItem("userSettings");
-    let applogo = localStorage.getItem("appLogo");
-    let defaultmenuid = localStorage.getItem("defaultmenuid");
-    let PageLanding = localStorage.getItem("PageLanding");
-    let baseUrl = localStorage.getItem("baseUrl");
-    let appid = localStorage.getItem("parseAppId");
+    // Clear Firebase related and general user items from localStorage
+    localStorage.removeItem("firebaseUid");
+    localStorage.removeItem("UserInformation");
+    localStorage.removeItem("userEmail");
+    localStorage.removeItem("profileImg");
+    localStorage.removeItem("_user_role");
+    localStorage.removeItem("TenantId");
+    localStorage.removeItem("TenantName");
+    localStorage.removeItem("Extand_Class"); // Parse specific
+    localStorage.removeItem("username");
+    localStorage.removeItem("PageLanding");
+    // Keep app specific settings if needed
+    // let appdata = localStorage.getItem("userSettings");
+    // let applogo = localStorage.getItem("appLogo");
+    // localStorage.clear(); // Or selectively remove items
+    // saveLanguageInLocal(i18n); // if i18n instance is still valid
+    // localStorage.setItem("appLogo", applogo);
+    // localStorage.setItem("userSettings", appdata);
 
-    localStorage.clear();
-    saveLanguageInLocal(i18n);
-
-    localStorage.setItem("appLogo", applogo);
-    localStorage.setItem("defaultmenuid", defaultmenuid);
-    localStorage.setItem("PageLanding", PageLanding);
-    localStorage.setItem("userSettings", appdata);
-    localStorage.setItem("baseUrl", baseUrl);
-    localStorage.setItem("parseAppId", appid);
+    // Navigate to login or home page
+    navigate("/login");
+    // Optionally, dispatch actions to clear Redux state
   };
 
+
+  // Firebase: This function needs a major overhaul or replacement.
+  // The logic for determining redirect URL based on role should use data from `/api/login`.
   const continueLoginFlow = async () => {
-    try {
-      const userSettings = appInfo.settings;
-      const extUser = await Parse.Cloud.run("getUserDetails");
-      if (extUser) {
-        const IsDisabled = extUser?.get("IsDisabled") || false;
-        if (!IsDisabled) {
-          const userRole = extUser?.get("UserRole");
-          const menu =
-            userRole && userSettings?.find((menu) => menu.role === userRole);
-          if (menu) {
-            const _currentRole = userRole;
-            const redirectUrl =
-              location?.state?.from || `/${menu.pageType}/${menu.pageId}`;
-            const _role = _currentRole.replace("contracts_", "");
-            localStorage.setItem("_user_role", _role);
-            const checkLanguage = extUser?.get("Language");
-            if (checkLanguage) {
-              checkLanguage && i18n.changeLanguage(checkLanguage);
-            }
-            const extInfo = JSON.parse(JSON.stringify(extUser));
-            // Continue with storing user data and redirecting
-            localStorage.setItem("Extand_Class", JSON.stringify([extUser]));
-            localStorage.setItem("userEmail", extInfo.Email);
-            localStorage.setItem("username", extInfo.Name);
-            if (extInfo?.TenantId) {
-              const tenant = {
-                Id: extInfo?.TenantId?.objectId || "",
-                Name: extInfo?.TenantId?.TenantName || ""
-              };
-              localStorage.setItem("TenantId", tenant?.Id);
-              dispatch(showTenant(tenant?.Name));
-              localStorage.setItem("TenantName", tenant?.Name);
-            }
-            localStorage.setItem("PageLanding", menu.pageId);
-            localStorage.setItem("defaultmenuid", menu.menuId);
-            localStorage.setItem("pageType", menu.pageType);
-              setState({ ...state, loading: false });
-              navigate(redirectUrl);
-          } else {
-            setState({ ...state, loading: false });
-            setIsModal(true);
-          }
-        } else {
-          showToast("danger", t("do-not-access-contact-admin"));
-          logOutUser();
-        }
-      } else {
-          showToast("danger", t("user-not-found"));
-          logOutUser();
-      }
-    } catch (error) {
-      console.error("Error during login flow", error);
-      showToast("danger", error.message || t("something-went-wrong-mssg"));
-    }
+    // This function was tightly coupled with Parse's extUser and session.
+    // Most of its logic (fetching user details, determining role, navigating)
+    // is now incorporated into the new `handleLogin` after `signInWithCustomToken` and
+    // using the `backendUserData` from `/api/login`.
+    // The modal popup logic for missing role needs to be re-thought for Firebase.
+    // If backendUserData from /api/login indicates a missing role, handleLogin should decide
+    // whether to show the modal or redirect to a dedicated profile completion page.
+    console.warn("continueLoginFlow (Parse) was called. Its logic should be integrated into handleLogin's success path with Firebase.");
+    // If setIsModal(true) was the outcome, that part would be in handleLogin.
+    // If navigation was the outcome, that part is also in handleLogin.
+    setState({ ...state, loading: false }); // Ensure loading is stopped.
   };
 
   return errMsg ? (

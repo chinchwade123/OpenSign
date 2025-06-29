@@ -1,59 +1,89 @@
 import React, { useState } from "react";
-import Parse from "parse";
-import { Navigate } from "react-router";
+// import Parse from "parse"; // Firebase: Remove Parse
+import { Navigate } from "react-router-dom"; // Use react-router-dom consistently
 import Title from "../components/Title";
 import { useTranslation } from "react-i18next";
+import { auth } from "../firebaseConfig"; // Firebase: Import auth
+import { updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth"; // Firebase: Import functions
+import Alert from "../primitives/Alert"; // For better user feedback than alert()
 
 function ChangePassword() {
   const { t } = useTranslation();
   const [currentpassword, setCurrentPassword] = useState("");
   const [newpassword, setnewpassword] = useState("");
   const [confirmpassword, setconfirmpassword] = useState("");
+  const [toast, setToast] = useState({ type: "", message: "" });
+  const [isLoading, setIsLoading] = useState(false);
+
+  const showAppToast = (type, message) => {
+    setToast({ type, message });
+    setIsLoading(false);
+    setTimeout(() => setToast({ type: "", message: "" }), 3000);
+  };
+
   const handleSubmit = async (evt) => {
     evt.preventDefault();
+    setIsLoading(true);
+
+    if (newpassword !== confirmpassword) {
+      showAppToast("danger", t("password-update-alert-4")); // "New passwords do not match."
+      return;
+    }
+
+    if (newpassword.length < 6) { // Basic Firebase password length check
+        showAppToast("danger", t("auth-weak-password")); // "Password should be at least 6 characters."
+        return;
+    }
+
+    const user = auth.currentUser;
+    if (!user) {
+      showAppToast("danger", t("auth-user-not-found")); // "User not authenticated."
+      // Optionally navigate to login
+      return;
+    }
+
     try {
-      if (newpassword === confirmpassword) {
-        Parse.User.logIn(localStorage.getItem("userEmail"), currentpassword)
-          .then(async (user) => {
-            if (user) {
-              const User = new Parse.User();
-              const query = new Parse.Query(User);
-              await query.get(user.id).then((user) => {
-                // Updates the data we want
-                user.set("password", newpassword);
-                user
-                  .save()
-                  .then(async () => {
-                    let _user = user.toJSON();
-                    if (_user) {
-                      await Parse.User.become(_user.sessionToken);
-                      localStorage.setItem("accesstoken", _user.sessionToken);
-                    }
-                    alert(t("password-update-alert-1"));
-                  })
-                  .catch((error) => {
-                    console.log("err", error);
-                    alert(t("something-went-wrong-mssg"));
-                  });
-              });
-            } else {
-              alert(t("password-update-alert-2"));
-            }
-          })
-          .catch((error) => {
-            alert(t("password-update-alert-3"));
-            console.error("Error while logging in user", error);
-          });
-      } else {
-        alert(t("password-update-alert-4"));
-      }
+      // 1. Re-authenticate user
+      const credential = EmailAuthProvider.credential(user.email, currentpassword);
+      await reauthenticateWithCredential(user, credential);
+
+      // 2. Update password
+      await updatePassword(user, newpassword);
+      showAppToast("success", t("password-update-alert-1")); // "Password updated successfully!"
+      // Clear fields after success
+      setCurrentPassword("");
+      setnewpassword("");
+      setconfirmpassword("");
+
     } catch (error) {
-      console.log("err", error);
+      console.error("Error changing password:", error);
+      let errorMessage = t("something-went-wrong-mssg");
+      if (error.code === "auth/wrong-password") {
+        errorMessage = t("password-update-alert-3"); // "Incorrect current password."
+      } else if (error.code === "auth/weak-password") {
+        errorMessage = t("auth-weak-password"); // "Password should be at least 6 characters."
+      } else if (error.code === "auth/requires-recent-login") {
+        errorMessage = t("auth-requires-recent-login"); // "This operation is sensitive and requires recent authentication. Log in again before retrying this request."
+        // Consider navigating to login page or prompting re-login more explicitly
+      }
+      showAppToast("danger", errorMessage);
+    } finally {
+      setIsLoading(false);
     }
   };
-  if (localStorage.getItem("accesstoken") === null) {
-    return <Navigate to="/" />;
+
+  // Check Firebase auth state instead of Parse token
+  const currentUser = auth.currentUser;
+  const firebaseUid = localStorage.getItem("firebaseUid"); // Get our flag
+
+  if (!currentUser && !firebaseUid) { // If Firebase doesn't know user AND our flag isn't set
+     // This check might be too simplistic if onAuthStateChanged hasn't run yet.
+     // A loading state driven by onAuthStateChanged in App.jsx is more robust.
+     // For now, this provides a basic guard.
+    console.log("ChangePassword: No authenticated user found, redirecting to login.");
+    return <Navigate to="/" replace />;
   }
+
   return (
     <div className="w-full bg-base-100 text-base-content shadow rounded-box p-2">
       <Title title="Change Password" />

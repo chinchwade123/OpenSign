@@ -2,11 +2,13 @@ import React, { useEffect, useState } from "react";
 import Title from "../components/Title";
 import { useNavigate } from "react-router";
 import login_img from "../assets/images/login_img.svg";
-import Parse from "parse";
+// import Parse from "parse"; // Firebase: Remove Parse
 import Alert from "../primitives/Alert";
 import { appInfo } from "../constant/appinfo";
 import { useDispatch } from "react-redux";
 import { fetchAppInfo } from "../redux/reducers/infoReducer";
+import { auth } from "../firebaseConfig"; // Firebase: Import auth
+import { sendPasswordResetEmail } from "firebase/auth"; // Firebase: Import sendPasswordResetEmail
 import {
   emailRegex,
 } from "../constant/const";
@@ -44,42 +46,52 @@ function ForgotPassword() {
     } else {
       setIsLoading(true);
       localStorage.setItem("appLogo", appInfo.applogo);
-      localStorage.setItem("userSettings", JSON.stringify(appInfo.settings));
+      localStorage.setItem("userSettings", JSON.stringify(appInfo.settings)); // This might be re-evaluated with Firebase auth
       if (state.email) {
-        const username = state.email;
         try {
-            await Parse.User.requestPasswordReset(username);
-          setToast({ type: "success", message: t("reset-password-alert-1") });
-        } catch (err) {
-          console.log("err ", err.code);
+          await sendPasswordResetEmail(auth, state.email);
+          setToast({ type: "success", message: t("reset-password-alert-1") }); // "Password reset email sent successfully!"
+        } catch (error) {
+          console.error("Firebase password reset error: ", error);
+          let errorMessage = t("reset-password-alert-2"); // "Failed to send password reset email."
+          if (error.code === "auth/user-not-found") {
+            errorMessage = t("auth-user-not-found"); // Create this translation: "No user found with this email."
+          } else if (error.code === "auth/invalid-email") {
+            errorMessage = t("auth-invalid-email"); // Create this translation: "The email address is not valid."
+          }
           setToast({
             type: "danger",
-            message: err.message || t("reset-password-alert-2")
+            message: errorMessage
           });
         } finally {
           setIsLoading(false);
-          setTimeout(() => setToast({ type: "", message: "" }), 1000);
+          setTimeout(() => setToast({ type: "", message: "" }), 3000); // Increased timeout for visibility
         }
+      } else {
+        setIsLoading(false); // Ensure loading is stopped if email is somehow empty
       }
     }
   };
 
   useEffect(() => {
     dispatch(fetchAppInfo());
-    saveLogo();
+    // saveLogo(); // Parse.User.logOut() was here, not needed for Firebase in this context
+    setImage(appInfo?.applogo || undefined); // Directly set image
     resize();
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
     // eslint-disable-next-line
-  }, []);
-  const saveLogo = async () => {
-    try {
-      await Parse.User.logOut();
-    } catch (err) {
-      console.log("err while logging out ", err);
-    }
-      setImage(appInfo?.applogo || undefined);
-  };
+  }, [dispatch]); // Added dispatch to dependency array
+
+  // const saveLogo = async () => { // Replaced by direct setImage in useEffect
+  //   try {
+  //     // await Parse.User.logOut(); // Not needed
+  //   } catch (err) {
+  //     console.log("err while logging out ", err);
+  //   }
+  //     setImage(appInfo?.applogo || undefined);
+  // };
+
   return (
     <div>
       {isLoading && (

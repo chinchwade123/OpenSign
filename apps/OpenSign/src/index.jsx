@@ -14,10 +14,15 @@ import {
   Preview
 } from "react-dnd-multi-backend";
 import DragElement from "./components/pdf/DragElement.jsx";
-import Parse from "parse";
+import Parse from "parse"; // Will be removed/refactored later
 import "./polyfills";
-import { serverUrl_fn } from "./constant/appinfo";
+import { serverUrl_fn } from "./constant/appinfo"; // May still be needed for non-Parse API calls if any
 import "./i18n";
+import { app as firebaseApp, auth as firebaseAuth } from "./firebaseConfig"; // Import Firebase
+
+// Ensure Firebase is initialized (by importing firebaseConfig.js)
+console.log("Firebase Initialized: ", firebaseApp.name ? "Success" : "Failed", firebaseAuth ? "& Auth Ready" : "& Auth Not Ready");
+
 
 const appId =
   import.meta.env.VITE_APPID || process.env.REACT_APP_APPID || "opensign";

@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from "react";
-import Parse from "parse";
-import { appInfo } from "../constant/appinfo";
+// import Parse from "parse"; // Firebase: Parse will be phased out
+import { appInfo } from "../constant/appinfo"; // May still be used for settings
 import { NavLink, useNavigate } from "react-router";
+import { auth } from "../firebaseConfig"; // Firebase: Import auth
+import { createUserWithEmailAndPassword } from "firebase/auth"; // Firebase: Import specific auth functions
+// import axios from "axios"; // Firebase: Use apiClient
+import apiClient from "../api/apiClient"; // Firebase: Use our configured apiClient
 import {
   getAppLogo,
   openInNewTab,
@@ -61,12 +65,15 @@ const AddAdmin = () => {
       setState((prev) => ({ ...prev, loading: false }));
     }
   };
-  const clearStorage = async () => {
-    try {
-      await Parse.User.logOut();
-    } catch (err) {
-      console.log("Err while logging out", err);
-    }
+  const clearStorage = async () => { // Firebase: Will need to update if any Firebase specific session items are stored outside of SDK's own management
+    // try {
+    //   await Parse.User.logOut(); // Firebase: This will be replaced by Firebase signOut elsewhere
+    // } catch (err) {
+    //   console.log("Err while logging out", err);
+    // }
+    // For initial admin setup, clearing most things might be okay.
+    // However, Firebase auth state is managed by the SDK.
+    // This function's purpose might change or become less critical.
     const baseUrl = localStorage.getItem("baseUrl");
     const appid = localStorage.getItem("parseAppId");
     const applogo = localStorage.getItem("appLogo");
@@ -89,159 +96,133 @@ const AddAdmin = () => {
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!emailRegex.test(email)) {
-      alert("Please enter a valid email address.");
-    } else {
-      if (lengthValid && caseDigitValid && specialCharValid) {
-        clearStorage();
-        setState({ loading: true });
-        const userDetails = {
-          name: name,
-          email: email?.toLowerCase()?.replace(/\s/g, ""),
-          phone: phone,
-          company: company,
-          jobTitle: jobTitle
+      alert("Please enter a valid email address."); // Consider using a more integrated notification system than alert()
+      return;
+    }
+    if (!(lengthValid && caseDigitValid && specialCharValid)) {
+      alert("Password does not meet all requirements."); // Or specific messages
+      return;
+    }
+
+    // clearStorage(); // Firebase: Re-evaluate if this is needed or how it should work with Firebase auth state
+    setState({ ...state, loading: true });
+
+    const userDetailsForBackend = {
+      name: name,
+      email: email?.toLowerCase()?.replace(/\s/g, ""),
+      phone: phone,
+      company: company,
+      jobTitle: jobTitle,
+      role: "contracts_Admin", // Specific for this admin setup form
+      timezone: usertimezone,
+      // Password is not sent to our backend if client creates Firebase Auth user
+    };
+    localStorage.setItem("userDetails", JSON.stringify(userDetailsForBackend)); // May not be needed if app relies on auth state / Redux
+
+    try {
+      // 1. Create user in Firebase Authentication (client-side)
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const firebaseUser = userCredential.user;
+
+      if (firebaseUser) {
+        // 2. Call our backend to create associated RTDB data
+        const backendPayload = {
+          ...userDetailsForBackend,
+          uid: firebaseUser.uid, // Send the Firebase UID
         };
-        localStorage.setItem("userDetails", JSON.stringify(userDetails));
-        try {
-          event.preventDefault();
-          const user = new Parse.User();
-          user.set("name", name);
-          user.set("email", email?.toLowerCase()?.replace(/\s/g, ""));
-          user.set("password", password);
-          user.set("phone", phone);
-          user.set("username", email?.toLowerCase()?.replace(/\s/g, ""));
-          const userRes = await user.save();
-          if (userRes) {
-            const params = {
-              userDetails: {
-                jobTitle: jobTitle,
-                company: company,
-                name: name,
-                email: email?.toLowerCase()?.replace(/\s/g, ""),
-                phone: phone,
-                role: "contracts_Admin",
-                timezone: usertimezone
-              }
-            };
-            try {
-              const usersignup = await Parse.Cloud.run("addadmin", params);
-              if (usersignup) {
-                if (isSubscribeNews) {
-                  subscribeNewsletter();
-                }
-                handleNavigation(userRes.getSessionToken());
-              }
-            } catch (err) {
-              alert(err.message);
-              setState({ loading: false });
-            }
+
+        // const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "/api"; // Get from env
+        const apiBaseUrl = appInfo.apiBaseUrl; // This line is actually not needed if using apiClient directly with relative path
+
+
+        const backendResponse = await apiClient.post(`/api/signup`, backendPayload); // Use apiClient, path is relative to baseURL
+
+        if (backendResponse.data && backendResponse.data.uid) {
+          if (isSubscribeNews) {
+            // TODO: Replace Parse.Cloud.run("newsletter", params) with a call to a new Firebase backend endpoint
+            // For now, just log it
+            console.log("Newsletter subscription requested for:", email);
+            // subscribeNewsletterFirebase(name, email); // Example future function
           }
-        } catch (error) {
-          console.log("err ", error);
-          if (error.code === 202) {
-            const params = { email: email };
-            const res = await Parse.Cloud.run("getUserDetails", params);
-            // console.log("Res ", res);
-            if (res) {
-              alert(t("already-exists-this-username"));
-              setState({ loading: false });
-            } else {
-              // console.log("state.email ", email);
-              try {
-                await Parse.User.requestPasswordReset(email).then(
-                  async function (res) {
-                    if (res.data === undefined) {
-                      alert(t("verification-code-sent"));
-                    }
-                  }
-                );
-              } catch (err) {
-                console.log(err);
-              }
-              setState({ loading: false });
-            }
+
+          // At this point, user is created in Firebase Auth and our backend.
+          // The onAuthStateChanged listener (to be implemented in App.jsx or similar)
+          // should pick up the new Firebase user and handle session setup & navigation.
+
+          setState({
+            ...state,
+            loading: false,
+            alertType: "success",
+            alertMsg: t("registered-user-successfully")
+          });
+          // Navigation should ideally be handled by onAuthStateChanged,
+          // but for immediate feedback, we can navigate here.
+          // The target page needs to be determined based on role, similar to original handleNavigation.
+          // For an admin, it might be a specific dashboard.
+          // For now, navigate to a generic dashboard or home. This needs refinement.
+
+          // Simplified navigation for now. Robust navigation should use data from onAuthStateChanged / Redux.
+          // Storing some initial info for the session to be picked up by onAuthStateChanged handler
+          localStorage.setItem("firebaseUid", firebaseUser.uid);
+          localStorage.setItem("userEmail", firebaseUser.email);
+          localStorage.setItem("username", name);
+          localStorage.setItem("_user_role", "contracts_Admin"); // From this form
+          localStorage.setItem("TenantId", backendResponse.data.tenantId); // Assuming signup returns tenantId
+
+          // Example navigation - this needs to align with how app determines landing page
+          const userSettings = appInfo.settings;
+          const menu = userSettings.find((m) => m.role === "contracts_Admin");
+          if (menu) {
+            navigate(`/${menu.pageType}/${menu.pageId}`);
           } else {
-            alert(error.message);
-            setState({ loading: false });
+            navigate("/"); // Fallback
           }
+
+        } else {
+          throw new Error(backendResponse.data?.error || "Backend signup failed to return expected data.");
         }
-      }
-    }
-  };
-  const handleNavigation = async (sessionToken) => {
-    const res = await Parse.User.become(sessionToken);
-    if (res) {
-      const _user = JSON.parse(JSON.stringify(res));
-      // console.log("_user ", _user);
-      localStorage.setItem("accesstoken", sessionToken);
-      localStorage.setItem("UserInformation", JSON.stringify(_user));
-      localStorage.setItem("accesstoken", _user.sessionToken);
-      if (_user.ProfilePic) {
-        localStorage.setItem("profileImg", _user.ProfilePic);
       } else {
-        localStorage.setItem("profileImg", "");
+        throw new Error("Firebase user creation failed on client.");
       }
-      // Check extended class user role and tenentId
-      try {
-        const userSettings = appInfo.settings;
-        const extUser = await Parse.Cloud.run("getUserDetails");
-        if (extUser) {
-          const IsDisabled = extUser?.get("IsDisabled") || false;
-          if (!IsDisabled) {
-            const userRole = extUser?.get("UserRole");
-            const menu =
-              userRole && userSettings.find((menu) => menu.role === userRole);
-            if (menu) {
-              const _currentRole = userRole;
-              const _role = _currentRole.replace("contracts_", "");
-              localStorage.setItem("_user_role", _role);
-              const extInfo_stringify = JSON.stringify([extUser]);
-              localStorage.setItem("Extand_Class", extInfo_stringify);
-              const extInfo = JSON.parse(JSON.stringify(extUser));
-              localStorage.setItem("userEmail", extInfo?.Email);
-              localStorage.setItem("username", extInfo?.Name);
-              if (extInfo?.TenantId) {
-                const tenant = {
-                  Id: extInfo?.TenantId?.objectId || "",
-                  Name: extInfo?.TenantId?.TenantName || ""
-                };
-                localStorage.setItem("TenantId", tenant?.Id);
-                dispatch(showTenant(tenant?.Name));
-                localStorage.setItem("TenantName", tenant?.Name);
-              }
-              localStorage.setItem("PageLanding", menu.pageId);
-              localStorage.setItem("defaultmenuid", menu.menuId);
-              localStorage.setItem("pageType", menu.pageType);
-              setState({
-                loading: false,
-                alertType: "success",
-                alertMsg: t("registered-user-successfully")
-              });
-              navigate(`/${menu.pageType}/${menu.pageId}`);
-            } else {
-              setState({
-                loading: false,
-                alertType: "danger",
-                alertMsg: t("role-not-found")
-              });
-            }
-          } else {
-            setState({
-              loading: false,
-              alertType: "danger",
-              alertMsg: t("do-not-access")
-            });
-          }
-        }
-      } catch (error) {
-        console.log("error in fetch extuser", error);
-        const msg = error.message || t("something-went-wrong-mssg");
-        setState({ loading: false, alertType: "danger", alertMsg: msg });
-      } finally {
-        setTimeout(() => setState({ loading: false, alertMsg: "" }), 2000);
+    } catch (error) {
+      console.error("Error during admin signup:", error);
+      let errorMessage = error.message;
+      if (error.code === "auth/email-already-exists") {
+        errorMessage = t("already-exists-this-username");
+      } else if (error.response && error.response.data && error.response.data.error) {
+        errorMessage = error.response.data.error; // Error from our backend
       }
+      setState({ ...state, loading: false, alertType: "danger", alertMsg: errorMessage });
+      // Consider if Parse's requestPasswordReset logic for existing accounts is still relevant here.
+      // For Firebase, if email exists, signup fails directly. User would use "Forgot Password" on login page.
+    } finally {
+      setTimeout(() => setState({ ...state, alertMsg: "" }), 3000);
     }
   };
+
+  // Firebase: handleNavigation is largely replaced by logic within handleSubmit's success path
+  // and by the upcoming onAuthStateChanged listener.
+  // This function can be removed or heavily simplified if parts are still needed temporarily.
+  const handleNavigation = async (/* firebaseUser, backendUserData */) => { // Parameters would change
+    console.warn("handleNavigation called - its logic should be integrated into handleSubmit or onAuthStateChanged");
+    // Original logic:
+    // Parse.User.become(sessionToken) -> Firebase session is already active via createUserWithEmailAndPassword
+    // Parse.Cloud.run("getUserDetails") -> This data should come from our backend /api/signup response or a subsequent /api/me call
+    // localStorage setup -> Done in handleSubmit or by onAuthStateChanged handler
+    // navigate -> Done in handleSubmit or by onAuthStateChanged handler
+
+    // Example of what might remain if called after successful signup and backend data creation:
+    // const userSettings = appInfo.settings;
+    // const userRole = localStorage.getItem("_user_role"); // Assuming it's set
+    // const menu = userRole && userSettings.find((menu) => menu.role === userRole);
+    // if (menu) {
+    //   navigate(`/${menu.pageType}/${menu.pageId}`);
+    // } else {
+    //   navigate("/"); // Fallback
+    // }
+    setState({ ...state, loading: false }); // Ensure loading is stopped
+  };
+
   const handlePasswordChange = (e) => {
     const newPassword = e.target.value;
     setPassword(newPassword);
